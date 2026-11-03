@@ -211,14 +211,23 @@ copyImageBtn.addEventListener('click', async () => {
 // 4. Détection dynamique du serveur & Téléchargement
 // ==========================================
 
+// URL de votre backend dans le Cloud (ex: Render.com) si vous en déployez un
+// Laissez vide pour utiliser la détection automatique locale
+const CLOUD_BACKEND_URL = '';
+
 let detectedApiOrigin = '';
 
 /**
- * Recherche automatique du port actif du serveur Python (5001, 5000, etc.)
- * Permet de fonctionner même si vous ouvrez la page via VS Code Live Server (:5500)
+ * Recherche automatique du serveur Python (Cloud, local ou réseau Wi-Fi)
  */
 async function getApiOrigin() {
     if (detectedApiOrigin) return detectedApiOrigin;
+
+    // Si une URL Cloud est configurée
+    if (CLOUD_BACKEND_URL) {
+        detectedApiOrigin = CLOUD_BACKEND_URL.replace(/\/$/, '');
+        return detectedApiOrigin;
+    }
 
     // 1. Tester l'origine actuelle
     try {
@@ -229,13 +238,14 @@ async function getApiOrigin() {
         }
     } catch (e) {}
 
-    // 2. Tester les ports probables où tourne server.py
+    // 2. Tester les adresses locales et réseau Wi-Fi (permet au téléphone de trouver le PC)
     const candidates = [
         'http://localhost:5001',
         'http://localhost:5000',
+        'http://192.168.100.243:5001',
+        'http://192.168.100.243:5000',
         'http://127.0.0.1:5001',
-        'http://127.0.0.1:5000',
-        'http://localhost:5002'
+        'http://127.0.0.1:5000'
     ];
 
     for (const host of candidates) {

@@ -299,4 +299,5 @@ def start_server(port=5000):
 
 
 if __name__ == "__main__":
-    start_server(5000)
+    port = int(os.environ.get("PORT", 5000))
+    start_server(port)
