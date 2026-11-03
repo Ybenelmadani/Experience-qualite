@@ -1,0 +1,27 @@
+{
+  "name": "youtube_mp4",
+  "version": "1.0.0",
+  "description": "Interface web moderne inspirée du design demandé (fond strié subtil, icônes, champ URL avec bouton « Coller » et prévisualisation instantanée de la vidéo en tant qu'image).",
+  "main": "script.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ybenelmadani/Experience-qualite.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Ybenelmadani/Experience-qualite/issues"
+  },
+  "homepage": "https://github.com/Ybenelmadani/Experience-qualite#readme",
+  "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
+    "cors": "^2.8.6",
+    "express": "^5.3.0"
+  }
+}

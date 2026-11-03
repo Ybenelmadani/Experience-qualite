@@ -331,82 +331,28 @@ async function triggerDownload() {
     // Afficher l'état de chargement
     downloadBtn.classList.add('loading');
     actionDownloadBtn.disabled = true;
-    showProgress(`Préparation du fichier MP4 avec son (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 25);
+    showProgress(`Démarrage du téléchargement MP4 avec son (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 40);
     hideStatus();
 
-    // 1. Vérifier si le serveur local PC est allumé
-    const origin = await getApiOrigin();
+    // URL de téléchargement streaming direct gérée par Express
+    const downloadEndpoint = `/api/download?url=${encodeURIComponent(url)}&quality=${selectedQuality}`;
 
-    if (origin) {
-        // --- MODE SERVEUR LOCAL (PC avec yt-dlp) ---
-        try {
-            const endpoint = `${origin}/api/download`;
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url, quality: selectedQuality })
-            });
+    // Lancer le téléchargement direct dans le navigateur (mobile Android & PC)
+    const a = document.createElement('a');
+    a.href = downloadEndpoint;
+    a.setAttribute('download', `video_${videoId}.mp4`);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
 
-            if (response.ok) {
-                const data = await response.json();
-                pollDownloadProgress(data.task_id, origin);
-                return;
-            }
-        } catch (err) {
-            console.log("Serveur local non joignable, utilisation de l'API Cloud Vercel...");
-        }
-    }
-
-    // 2. --- MODE VERCEL CLOUD (DIRECT DANS LES FICHIERS DU TÉLÉPHONE) ---
-    showProgress("Conversion de la vidéo et audio en cours...", 60);
-
-    try {
-        const response = await fetch('/api/download', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: url, quality: selectedQuality })
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            if (data.downloadUrl) {
-                showProgress("Téléchargement en cours dans vos fichiers...", 100);
-                downloadBtn.classList.remove('loading');
-                actionDownloadBtn.disabled = false;
-
-                const filename = data.filename || `video_${videoId}.mp4`;
-
-                // Déclencher le téléchargement direct dans le dossier "Téléchargements" du téléphone / PC
-                const a = document.createElement('a');
-                a.href = data.downloadUrl;
-                a.setAttribute('download', filename);
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-
-                showStatus(`✅ <strong>Téléchargement réussi !</strong><br>Le fichier avec image et son est en cours d'enregistrement dans votre dossier <strong>Téléchargements</strong>.<br><a href="${data.downloadUrl}" download="${filename}" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Réenregistrer le fichier</a>`, "success");
-                showToast("Téléchargement automatique lancé !");
-                return;
-            }
-        }
-    } catch (err) {
-        console.error("Erreur API Vercel :", err);
-    }
-
-    // 3. Mode direct sécurisé (avec son garanti)
-    downloadBtn.classList.remove('loading');
-    actionDownloadBtn.disabled = false;
-    hideProgress();
-
-    const directDownloadBox = document.getElementById('directDownloadBox');
-    if (directDownloadBox) {
-        directDownloadBox.classList.remove('hidden');
-        directDownloadBox.scrollIntoView({ behavior: 'smooth' });
-    }
-
-    const directUrl = `https://api.vevioz.com/api/button/mp4?url=${encodeURIComponent(url)}`;
-    showStatus(`🎬 <strong>Téléchargement direct prêt :</strong><br>Le bouton ci-dessus ou le lien ci-dessous enregistre directement le fichier MP4 avec son dans vos fichiers :<br><a href="${directUrl}" target="_blank" download class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Télécharger en MP4 (avec son)</a>`, "success");
-    showToast("Prêt pour enregistrement !");
+    // Mettre à jour l'interface utilisateur
+    setTimeout(() => {
+        showProgress("Téléchargement envoyé à votre navigateur !", 100);
+        downloadBtn.classList.remove('loading');
+        actionDownloadBtn.disabled = false;
+        showStatus(`✅ <strong>Téléchargement lancé !</strong><br>Le fichier MP4 avec son est en cours d'enregistrement dans votre dossier <strong>Téléchargements</strong>.<br><a href="${downloadEndpoint}" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Relancer le téléchargement</a>`, "success");
+        showToast("Téléchargement automatique en cours !");
+    }, 1200);
 }
 
 // Suivi de la progression via l'API
