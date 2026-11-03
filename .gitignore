@@ -1,0 +1,21 @@
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Videos downloaded (can be large files)
+videos/*.mp4
+videos/*.mkv
+videos/*.webm
+
+# Cookies (sensitive)
+cookies.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
