@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const ytdl = require('@distube/ytdl-core');
 const path = require('path');
 
 const app = express();
@@ -12,79 +11,166 @@ app.use(express.json());
 // Servir le front-end statique (index.html, style.css, script.js)
 app.use(express.static(__dirname));
 
-// Endpoint pour vérifier l'état de l'API
+// ─────────────────────────────────────────────────────────────
+// Clé RapidAPI (définie dans Vercel → Settings → Env Variables)
+// ─────────────────────────────────────────────────────────────
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '';
+
+// ─────────────────────────────────────────────────────────────
+// Utilitaire : extraire l'ID YouTube depuis une URL
+// ─────────────────────────────────────────────────────────────
+function extractVideoId(url) {
+    const match = url.match(
+        /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([\w-]{11})/
+    );
+    return match ? match[1] : null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Endpoint santé
+// ─────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', server: 'express' });
+    res.json({ status: 'ok', server: 'express', rapidapi: !!RAPIDAPI_KEY });
 });
 
-// Endpoint pour obtenir les informations de la vidéo
-app.get('/api/info', async (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// Endpoint principal : obtenir un lien de téléchargement direct
+// via RapidAPI (yt-api ou youtube-mp36)
+// Le navigateur télécharge DIRECTEMENT depuis le CDN → pas de
+// limite de taille Vercel, pas de timeout, son inclus.
+// ─────────────────────────────────────────────────────────────
+app.get('/api/download', async (req, res) => {
     try {
         const videoUrl = req.query.url;
-        if (!videoUrl || !ytdl.validateURL(videoUrl)) {
-            return res.status(400).json({ error: "URL YouTube invalide" });
+        const quality  = req.query.quality || '720';
+
+        if (!videoUrl) {
+            return res.status(400).json({ error: 'URL manquante' });
         }
-        const info = await ytdl.getInfo(videoUrl);
-        const details = info.videoDetails;
-        res.json({
-            title: details.title,
-            author: details.author ? details.author.name : 'YouTube',
-            thumbnail: details.thumbnails && details.thumbnails.length ? details.thumbnails[details.thumbnails.length - 1].url : null,
-            lengthSeconds: details.lengthSeconds
-        });
+
+        const videoId = extractVideoId(videoUrl);
+        if (!videoId) {
+            return res.status(400).json({ error: 'URL YouTube invalide' });
+        }
+
+        if (!RAPIDAPI_KEY) {
+            return res.status(503).json({
+                error: 'Clé RapidAPI non configurée. Ajoutez RAPIDAPI_KEY dans Vercel → Settings → Environment Variables.'
+            });
+        }
+
+        // ── Appel API 1 : yt-api (qualité configurable) ──────────────────
+        // Docs: https://rapidapi.com/ytjar/api/yt-api
+        let downloadUrl = null;
+        let filename    = `video_youtube_${videoId}.mp4`;
+
+        try {
+            const qualityParam = quality === '2160' ? '2160' :
+                                 quality === '1080' ? '1080' :
+                                 quality === '480'  ? '480'  : '720';
+
+            const apiRes = await fetch(
+                `https://yt-api.p.rapidapi.com/dl?id=${videoId}&cgeo=US`,
+                {
+                    method: 'GET',
+                    headers: {
+                        'x-rapidapi-key':  RAPIDAPI_KEY,
+                        'x-rapidapi-host': 'yt-api.p.rapidapi.com'
+                    }
+                }
+            );
+
+            if (apiRes.ok) {
+                const data = await apiRes.json();
+
+                // yt-api renvoie { title, formats: [{url, qualityLabel, ...}] }
+                if (data.title) {
+                    filename = data.title.replace(/[\\/:*?"<>|]/g, '').trim() + '.mp4';
+                }
+
+                // Trouver le format avec son le plus proche de la qualité demandée
+                if (data.formats && data.formats.length > 0) {
+                    // Préférer les formats avec audio+video (mimeType video/mp4)
+                    const avFormats = data.formats.filter(f =>
+                        f.mimeType && f.mimeType.startsWith('video/mp4') &&
+                        f.url && f.hasAudio !== false
+                    );
+
+                    // Chercher la qualité demandée en priorité
+                    const targetHeight = parseInt(qualityParam, 10);
+                    const best = avFormats.find(f => f.qualityLabel && f.qualityLabel.startsWith(qualityParam)) ||
+                                 avFormats.sort((a, b) => {
+                                     const ha = parseInt(a.qualityLabel || '0', 10);
+                                     const hb = parseInt(b.qualityLabel || '0', 10);
+                                     return Math.abs(ha - targetHeight) - Math.abs(hb - targetHeight);
+                                 })[0];
+
+                    if (best && best.url) {
+                        downloadUrl = best.url;
+                    }
+                }
+
+                // Fallback : lien direct si l'API renvoie un url racine
+                if (!downloadUrl && data.url) {
+                    downloadUrl = data.url;
+                }
+            }
+        } catch (e) {
+            console.error('yt-api erreur:', e.message);
+        }
+
+        // ── Appel API 2 (fallback) : youtube-mp36 (MP3 → on renvoie l'URL brute) ──
+        if (!downloadUrl) {
+            try {
+                const mp4Res = await fetch(
+                    `https://youtube-mp36.p.rapidapi.com/dl?id=${videoId}`,
+                    {
+                        method: 'GET',
+                        headers: {
+                            'x-rapidapi-key':  RAPIDAPI_KEY,
+                            'x-rapidapi-host': 'youtube-mp36.p.rapidapi.com'
+                        }
+                    }
+                );
+                if (mp4Res.ok) {
+                    const mp4Data = await mp4Res.json();
+                    if (mp4Data.link) {
+                        downloadUrl = mp4Data.link;
+                        if (mp4Data.title) {
+                            filename = mp4Data.title.replace(/[\\/:*?"<>|]/g, '').trim() + '.mp4';
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('youtube-mp36 erreur:', e.message);
+            }
+        }
+
+        if (!downloadUrl) {
+            return res.status(503).json({
+                error: 'Impossible d\'obtenir le lien de téléchargement. Réessayez dans quelques secondes.'
+            });
+        }
+
+        // ── Retourner l'URL CDN au navigateur ────────────────────────────
+        // Le navigateur télécharge DIRECTEMENT (pas via Vercel) → pas de timeout
+        res.json({ downloadUrl, filename });
+
     } catch (err) {
+        console.error('Erreur route /api/download:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Endpoint principal : Téléchargement en streaming direct avec SON garanti
-app.get('/api/download', async (req, res) => {
-    try {
-        const videoUrl = req.query.url;
-        const quality = req.query.quality || '720';
-
-        if (!videoUrl || !ytdl.validateURL(videoUrl)) {
-            return res.status(400).json({ error: "URL YouTube invalide" });
-        }
-
-        const info = await ytdl.getInfo(videoUrl);
-        const rawTitle = info.videoDetails.title || 'video_youtube';
-        // Nettoyer le titre pour le nom de fichier
-        const safeTitle = rawTitle.replace(/[\\/:*?"<>|]/g, '').trim();
-
-        // En-têtes pour enregistrement direct dans les fichiers du navigateur
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeTitle)}.mp4"; filename*=UTF-8''${encodeURIComponent(safeTitle)}.mp4`);
-        res.setHeader('Content-Type', 'video/mp4');
-
-        // itag 22 = 720p HD avec son (audioandvideo), itag 18 = 360p avec son
-        const itag = (quality === '480' || quality === '360') ? 18 : 22;
-
-        const stream = ytdl(videoUrl, {
-            quality: itag,
-            filter: 'audioandvideo'
-        });
-
-        stream.on('error', (err) => {
-            console.error('Erreur stream ytdl:', err);
-            if (!res.headersSent) {
-                res.status(500).json({ error: "Erreur pendant le téléchargement de la vidéo" });
-            }
-        });
-
-        stream.pipe(res);
-    } catch (err) {
-        console.error('Erreur route download:', err);
-        if (!res.headersSent) {
-            res.status(500).json({ error: err.message });
-        }
-    }
-});
-
-if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+// ─────────────────────────────────────────────────────────────
+// Démarrage local
+// ─────────────────────────────────────────────────────────────
+if (!process.env.VERCEL) {
     app.listen(PORT, () => {
         console.log('='.repeat(60));
-        console.log(`[OK] BACKEND EXPRESS DEMARRE AVEC SUCCES !`);
-        console.log(`--> Adresse locale : http://localhost:${PORT}`);
+        console.log(`[OK] SERVEUR EXPRESS DEMARRE`);
+        console.log(`--> http://localhost:${PORT}`);
+        console.log(`--> RapidAPI Key: ${RAPIDAPI_KEY ? 'CONFIGUREE ✓' : 'MANQUANTE ✗'}`);
         console.log('='.repeat(60));
     });
 }

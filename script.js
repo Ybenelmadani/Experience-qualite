@@ -221,102 +221,8 @@ copyImageBtn.addEventListener('click', async () => {
 });
 
 // ==========================================
-// 4. Détection dynamique du serveur & Téléchargement
+// 4. Téléchargement via backend Vercel (RapidAPI)
 // ==========================================
-
-// ==========================================
-// 4. Détection dynamique & Téléchargement (Local + Cloud Vercel)
-// ==========================================
-
-// Instances Cloud gratuites (sans carte bancaire, fonctionne directement sur Vercel)
-const CLOUD_INSTANCES = [
-    'https://api.cobalt.tools',
-    'https://cobalt-api.kwiatekm.tokyo',
-    'https://cobalt.canine.tools'
-];
-
-let detectedApiOrigin = '';
-
-/**
- * Recherche automatique du serveur Python local (si démarré sur PC ou Wi-Fi)
- */
-async function getApiOrigin() {
-    if (detectedApiOrigin) return detectedApiOrigin;
-
-    // 1. Tester l'origine actuelle (si lancé directement sur http://localhost:5000 ou 5001)
-    try {
-        const testRes = await fetch('/api/videos', { method: 'GET' });
-        if (testRes.ok) {
-            detectedApiOrigin = '';
-            return '';
-        }
-    } catch (e) {}
-
-    // 2. Tester les adresses locales et réseau Wi-Fi
-    const candidates = [
-        'http://localhost:5001',
-        'http://localhost:5000',
-        'http://192.168.100.243:5001',
-        'http://192.168.100.243:5000',
-        'http://127.0.0.1:5001',
-        'http://127.0.0.1:5000'
-    ];
-
-    for (const host of candidates) {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 700);
-            const res = await fetch(`${host}/api/videos`, { method: 'GET', signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (res.ok) {
-                detectedApiOrigin = host;
-                console.log(`[OK] Connecté au serveur Python local sur : ${host}`);
-                return host;
-            }
-        } catch (e) {}
-    }
-
-    return null;
-}
-
-/**
- * Téléchargement 100% Cloud (pour Vercel sur smartphone ou sans PC allumé)
- */
-async function downloadViaCloud(url, quality) {
-    const qualityMap = { 480: '480', 720: '720', 1080: '1080', 2160: '2160' };
-    const qStr = qualityMap[quality] || '720';
-
-    for (const api of CLOUD_INSTANCES) {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 14000);
-            const res = await fetch(api, {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    url: url,
-                    videoQuality: qStr,
-                    downloadMode: 'auto'
-                }),
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-
-            if (res.ok) {
-                const data = await res.json();
-                if (data.url) {
-                    return data.url;
-                }
-            }
-        } catch (e) {
-            console.warn(`Instance ${api} occupée, essai de la suivante...`);
-        }
-    }
-    return null;
-}
 
 async function triggerDownload() {
     const url = videoUrlInput.value.trim();
@@ -331,28 +237,60 @@ async function triggerDownload() {
     // Afficher l'état de chargement
     downloadBtn.classList.add('loading');
     actionDownloadBtn.disabled = true;
-    showProgress(`Démarrage du téléchargement MP4 avec son (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 40);
+    showProgress(`⏳ Préparation du fichier MP4 (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 20);
     hideStatus();
 
-    // URL de téléchargement streaming direct gérée par Express
-    const downloadEndpoint = `/api/download?url=${encodeURIComponent(url)}&quality=${selectedQuality}`;
+    try {
+        // ─── Étape 1 : Demander l'URL CDN au backend ───────────────────
+        showProgress("🔍 Récupération du lien de téléchargement...", 40);
 
-    // Lancer le téléchargement direct dans le navigateur (mobile Android & PC)
-    const a = document.createElement('a');
-    a.href = downloadEndpoint;
-    a.setAttribute('download', `video_${videoId}.mp4`);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+        const apiEndpoint = `/api/download?url=${encodeURIComponent(url)}&quality=${selectedQuality}`;
+        const response = await fetch(apiEndpoint);
+        const data = await response.json();
 
-    // Mettre à jour l'interface utilisateur
-    setTimeout(() => {
-        showProgress("Téléchargement envoyé à votre navigateur !", 100);
+        if (!response.ok || !data.downloadUrl) {
+            const errMsg = data.error || "Impossible d'obtenir le lien vidéo.";
+            downloadBtn.classList.remove('loading');
+            actionDownloadBtn.disabled = false;
+            hideProgress();
+            showStatus(`❌ <strong>Erreur :</strong> ${errMsg}<br><small>Réessayez dans quelques secondes.</small>`, "error");
+            showToast("Erreur : " + errMsg);
+            return;
+        }
+
+        // ─── Étape 2 : Déclencher le téléchargement direct depuis le CDN ──
+        showProgress("⬇️ Téléchargement en cours depuis le serveur...", 70);
+
+        const filename = data.filename || `video_youtube_${videoId}.mp4`;
+        const a = document.createElement('a');
+        a.href = data.downloadUrl;
+        a.setAttribute('download', filename);
+        a.setAttribute('target', '_blank');  // fallback mobile
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // ─── Étape 3 : Confirmer à l'utilisateur ────────────────────────
+        setTimeout(() => {
+            showProgress("✅ Téléchargement lancé !", 100);
+            downloadBtn.classList.remove('loading');
+            actionDownloadBtn.disabled = false;
+            showStatus(
+                `✅ <strong>Téléchargement lancé avec succès !</strong><br>` +
+                `Le fichier <strong>${filename}</strong> (MP4 avec son) est en cours d'enregistrement dans votre dossier <strong>Téléchargements</strong>.<br>` +
+                `<a href="${data.downloadUrl}" download="${filename}" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Retélécharger si nécessaire</a>`,
+                "success"
+            );
+            showToast("✅ Téléchargement MP4 lancé !");
+        }, 800);
+
+    } catch (err) {
         downloadBtn.classList.remove('loading');
         actionDownloadBtn.disabled = false;
-        showStatus(`✅ <strong>Téléchargement lancé !</strong><br>Le fichier MP4 avec son est en cours d'enregistrement dans votre dossier <strong>Téléchargements</strong>.<br><a href="${downloadEndpoint}" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Relancer le téléchargement</a>`, "success");
-        showToast("Téléchargement automatique en cours !");
-    }, 1200);
+        hideProgress();
+        showStatus(`❌ <strong>Erreur réseau :</strong> ${err.message}<br><small>Vérifiez votre connexion et réessayez.</small>`, "error");
+        showToast("Erreur réseau : " + err.message);
+    }
 }
 
 // Suivi de la progression via l'API
