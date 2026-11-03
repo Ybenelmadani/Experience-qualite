@@ -211,25 +211,26 @@ copyImageBtn.addEventListener('click', async () => {
 // 4. Détection dynamique du serveur & Téléchargement
 // ==========================================
 
-// URL de votre backend dans le Cloud (ex: Render.com) si vous en déployez un
-// Laissez vide pour utiliser la détection automatique locale
-const CLOUD_BACKEND_URL = '';
+// ==========================================
+// 4. Détection dynamique & Téléchargement (Local + Cloud Vercel)
+// ==========================================
+
+// Instances Cloud gratuites (sans carte bancaire, fonctionne directement sur Vercel)
+const CLOUD_INSTANCES = [
+    'https://api.cobalt.tools',
+    'https://cobalt-api.kwiatekm.tokyo',
+    'https://cobalt.canine.tools'
+];
 
 let detectedApiOrigin = '';
 
 /**
- * Recherche automatique du serveur Python (Cloud, local ou réseau Wi-Fi)
+ * Recherche automatique du serveur Python local (si démarré sur PC ou Wi-Fi)
  */
 async function getApiOrigin() {
     if (detectedApiOrigin) return detectedApiOrigin;
 
-    // Si une URL Cloud est configurée
-    if (CLOUD_BACKEND_URL) {
-        detectedApiOrigin = CLOUD_BACKEND_URL.replace(/\/$/, '');
-        return detectedApiOrigin;
-    }
-
-    // 1. Tester l'origine actuelle
+    // 1. Tester l'origine actuelle (si lancé directement sur http://localhost:5000 ou 5001)
     try {
         const testRes = await fetch('/api/videos', { method: 'GET' });
         if (testRes.ok) {
@@ -238,7 +239,7 @@ async function getApiOrigin() {
         }
     } catch (e) {}
 
-    // 2. Tester les adresses locales et réseau Wi-Fi (permet au téléphone de trouver le PC)
+    // 2. Tester les adresses locales et réseau Wi-Fi
     const candidates = [
         'http://localhost:5001',
         'http://localhost:5000',
@@ -251,18 +252,57 @@ async function getApiOrigin() {
     for (const host of candidates) {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 800);
+            const timeoutId = setTimeout(() => controller.abort(), 700);
             const res = await fetch(`${host}/api/videos`, { method: 'GET', signal: controller.signal });
             clearTimeout(timeoutId);
             if (res.ok) {
                 detectedApiOrigin = host;
-                console.log(`[OK] Connecté au serveur Python sur : ${host}`);
+                console.log(`[OK] Connecté au serveur Python local sur : ${host}`);
                 return host;
             }
         } catch (e) {}
     }
 
-    return '';
+    return null;
+}
+
+/**
+ * Téléchargement 100% Cloud (pour Vercel sur smartphone ou sans PC allumé)
+ */
+async function downloadViaCloud(url, quality) {
+    const qualityMap = { 480: '480', 720: '720', 1080: '1080', 2160: '2160' };
+    const qStr = qualityMap[quality] || '720';
+
+    for (const api of CLOUD_INSTANCES) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 14000);
+            const res = await fetch(api, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    url: url,
+                    videoQuality: qStr,
+                    downloadMode: 'auto'
+                }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (res.ok) {
+                const data = await res.json();
+                if (data.url) {
+                    return data.url;
+                }
+            }
+        } catch (e) {
+            console.warn(`Instance ${api} occupée, essai de la suivante...`);
+        }
+    }
+    return null;
 }
 
 async function triggerDownload() {
@@ -275,42 +315,71 @@ async function triggerDownload() {
         return;
     }
 
-    // Détection de l'adresse du serveur (localhost:5001 ou localhost:5000)
-    const origin = await getApiOrigin();
-
     // Afficher l'état de chargement
     downloadBtn.classList.add('loading');
     actionDownloadBtn.disabled = true;
-    showProgress(`Connexion au serveur... (qualité : ${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})`, 5);
+    showProgress(`Préparation du téléchargement (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 15);
     hideStatus();
 
-    try {
-        const endpoint = origin ? `${origin}/api/download` : '/api/download';
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: url, quality: selectedQuality })
-        });
+    // 1. Vérifier si le serveur local PC est allumé
+    const origin = await getApiOrigin();
 
-        if (!response.ok) {
-            throw new Error(`Erreur serveur (${response.status})`);
+    if (origin !== null) {
+        // --- MODE SERVEUR LOCAL (PC) ---
+        try {
+            const endpoint = origin ? `${origin}/api/download` : '/api/download';
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url, quality: selectedQuality })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                pollDownloadProgress(data.task_id, origin);
+                return;
+            }
+        } catch (err) {
+            console.log("Serveur local non joignable, bascule sur le mode Cloud...");
         }
-
-        const data = await response.json();
-        const taskId = data.task_id;
-
-        // Suivre la progression du téléchargement en temps réel
-        pollDownloadProgress(taskId, origin);
-
-    } catch (error) {
-        downloadBtn.classList.remove('loading');
-        actionDownloadBtn.disabled = false;
-        
-        // Message d'aide ciblé
-        showStatus(`ℹ️ Le serveur local répond sur <strong>${origin || 'aucun port'}</strong>.<br>Vérifiez que votre terminal affiche bien :<br><code>--> Ouvrez dans votre navigateur : http://localhost:5001</code><br>👉 Ouvrez directement ce lien : <a href="http://localhost:5001" target="_blank" style="color:#0066fe; font-weight:700;">http://localhost:5001</a>`, "error");
-        showToast("Ouvrez http://localhost:5001");
-        hideProgress();
     }
+
+    // 2. --- MODE 100% CLOUD (VERCEL / SMARTPHONE) ---
+    showProgress("Génération du lien MP4 via le Cloud...", 45);
+
+    try {
+        const directDownloadUrl = await downloadViaCloud(url, selectedQuality);
+
+        if (directDownloadUrl) {
+            showProgress("Téléchargement prêt !", 100);
+            downloadBtn.classList.remove('loading');
+            actionDownloadBtn.disabled = false;
+
+            // Déclencher le téléchargement direct dans le navigateur (mobile ou PC)
+            const a = document.createElement('a');
+            a.href = directDownloadUrl;
+            a.download = `video_${videoId}.mp4`;
+            a.target = '_blank';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            showStatus(`✅ <strong>Téléchargement démarré !</strong><br>Le fichier MP4 se télécharge directement sur votre appareil.<br><a href="${directDownloadUrl}" target="_blank" download class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Télécharger à nouveau</a>`, "success");
+            showToast("Téléchargement MP4 lancé !");
+            return;
+        }
+    } catch (cloudErr) {
+        console.error("Erreur Cloud :", cloudErr);
+    }
+
+    // 3. --- REPLI SI LE CLOUD EST TEMPORAIREMENT SURCHARGÉ ---
+    downloadBtn.classList.remove('loading');
+    actionDownloadBtn.disabled = false;
+    hideProgress();
+
+    const fallbackUrl = `https://cobalt.tools/?u=${encodeURIComponent(url)}`;
+    showStatus(`⚡ <strong>Téléchargement direct disponible :</strong><br>Cliquez ci-dessous pour télécharger immédiatement la vidéo sans serveur :<br><a href="${fallbackUrl}" target="_blank" rel="noopener noreferrer" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">🚀 Ouvrir et Télécharger en MP4</a>`, "success");
+    showToast("Cliquez sur le bouton pour télécharger");
 }
 
 // Suivi de la progression via l'API
