@@ -113,6 +113,15 @@ function loadVideoPreview(videoId, rawUrl) {
     // Afficher la section d'aperçu
     previewSection.classList.remove('hidden');
 
+    // Charger le widget de téléchargement direct avec son (pour mobile et Vercel)
+    const downloadFrame = document.getElementById('downloadFrame');
+    const directDownloadBox = document.getElementById('directDownloadBox');
+    if (downloadFrame && directDownloadBox) {
+        const fullUrl = rawUrl || `https://www.youtube.com/watch?v=${videoId}`;
+        downloadFrame.src = `https://api.vevioz.com/api/button/mp4?url=${encodeURIComponent(fullUrl)}`;
+        directDownloadBox.classList.remove('hidden');
+    }
+
     // Récupérer le titre et l'auteur via l'API oEmbed de YouTube (sans clé d'API requise)
     fetchOEmbedData(videoId, rawUrl);
 }
@@ -120,6 +129,10 @@ function loadVideoPreview(videoId, rawUrl) {
 function hidePreview() {
     currentVideoId = null;
     previewSection.classList.add('hidden');
+    const downloadFrame = document.getElementById('downloadFrame');
+    const directDownloadBox = document.getElementById('directDownloadBox');
+    if (downloadFrame) downloadFrame.src = '';
+    if (directDownloadBox) directDownloadBox.classList.add('hidden');
     hideProgress();
     hideStatus();
 }
@@ -380,13 +393,20 @@ async function triggerDownload() {
         console.error("Erreur API Vercel :", err);
     }
 
-    // 3. Repli si l'API est temporairement indisponible
+    // 3. Mode direct sécurisé (avec son garanti)
     downloadBtn.classList.remove('loading');
     actionDownloadBtn.disabled = false;
     hideProgress();
 
-    showStatus(`⚠️ La passerelle vidéo est temporairement occupée. Veuillez réessayez dans quelques secondes en cliquant sur <strong>Télécharger la vidéo</strong>.`, "error");
-    showToast("Veuillez réessayez dans un instant");
+    const directDownloadBox = document.getElementById('directDownloadBox');
+    if (directDownloadBox) {
+        directDownloadBox.classList.remove('hidden');
+        directDownloadBox.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    const directUrl = `https://api.vevioz.com/api/button/mp4?url=${encodeURIComponent(url)}`;
+    showStatus(`🎬 <strong>Téléchargement direct prêt :</strong><br>Le bouton ci-dessus ou le lien ci-dessous enregistre directement le fichier MP4 avec son dans vos fichiers :<br><a href="${directUrl}" target="_blank" download class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Télécharger en MP4 (avec son)</a>`, "success");
+    showToast("Prêt pour enregistrement !");
 }
 
 // Suivi de la progression via l'API
