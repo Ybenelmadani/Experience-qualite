@@ -318,16 +318,16 @@ async function triggerDownload() {
     // Afficher l'état de chargement
     downloadBtn.classList.add('loading');
     actionDownloadBtn.disabled = true;
-    showProgress(`Préparation du téléchargement (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 15);
+    showProgress(`Préparation du fichier MP4 avec son (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 25);
     hideStatus();
 
     // 1. Vérifier si le serveur local PC est allumé
     const origin = await getApiOrigin();
 
-    if (origin !== null) {
-        // --- MODE SERVEUR LOCAL (PC) ---
+    if (origin) {
+        // --- MODE SERVEUR LOCAL (PC avec yt-dlp) ---
         try {
-            const endpoint = origin ? `${origin}/api/download` : '/api/download';
+            const endpoint = `${origin}/api/download`;
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -340,46 +340,53 @@ async function triggerDownload() {
                 return;
             }
         } catch (err) {
-            console.log("Serveur local non joignable, bascule sur le mode Cloud...");
+            console.log("Serveur local non joignable, utilisation de l'API Cloud Vercel...");
         }
     }
 
-    // 2. --- MODE 100% CLOUD (VERCEL / SMARTPHONE) ---
-    showProgress("Génération du lien MP4 via le Cloud...", 45);
+    // 2. --- MODE VERCEL CLOUD (DIRECT DANS LES FICHIERS DU TÉLÉPHONE) ---
+    showProgress("Conversion de la vidéo et audio en cours...", 60);
 
     try {
-        const directDownloadUrl = await downloadViaCloud(url, selectedQuality);
+        const response = await fetch('/api/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: url, quality: selectedQuality })
+        });
 
-        if (directDownloadUrl) {
-            showProgress("Téléchargement prêt !", 100);
-            downloadBtn.classList.remove('loading');
-            actionDownloadBtn.disabled = false;
+        if (response.ok) {
+            const data = await response.json();
+            if (data.downloadUrl) {
+                showProgress("Téléchargement en cours dans vos fichiers...", 100);
+                downloadBtn.classList.remove('loading');
+                actionDownloadBtn.disabled = false;
 
-            // Déclencher le téléchargement direct dans le navigateur (mobile ou PC)
-            const a = document.createElement('a');
-            a.href = directDownloadUrl;
-            a.download = `video_${videoId}.mp4`;
-            a.target = '_blank';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+                const filename = data.filename || `video_${videoId}.mp4`;
 
-            showStatus(`✅ <strong>Téléchargement démarré !</strong><br>Le fichier MP4 se télécharge directement sur votre appareil.<br><a href="${directDownloadUrl}" target="_blank" download class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Télécharger à nouveau</a>`, "success");
-            showToast("Téléchargement MP4 lancé !");
-            return;
+                // Déclencher le téléchargement direct dans le dossier "Téléchargements" du téléphone / PC
+                const a = document.createElement('a');
+                a.href = data.downloadUrl;
+                a.setAttribute('download', filename);
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                showStatus(`✅ <strong>Téléchargement réussi !</strong><br>Le fichier avec image et son est en cours d'enregistrement dans votre dossier <strong>Téléchargements</strong>.<br><a href="${data.downloadUrl}" download="${filename}" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Réenregistrer le fichier</a>`, "success");
+                showToast("Téléchargement automatique lancé !");
+                return;
+            }
         }
-    } catch (cloudErr) {
-        console.error("Erreur Cloud :", cloudErr);
+    } catch (err) {
+        console.error("Erreur API Vercel :", err);
     }
 
-    // 3. --- REPLI SI LE CLOUD EST TEMPORAIREMENT SURCHARGÉ ---
+    // 3. Repli si l'API est temporairement indisponible
     downloadBtn.classList.remove('loading');
     actionDownloadBtn.disabled = false;
     hideProgress();
 
-    const fallbackUrl = `https://cobalt.tools/?u=${encodeURIComponent(url)}`;
-    showStatus(`⚡ <strong>Téléchargement direct disponible :</strong><br>Cliquez ci-dessous pour télécharger immédiatement la vidéo sans serveur :<br><a href="${fallbackUrl}" target="_blank" rel="noopener noreferrer" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">🚀 Ouvrir et Télécharger en MP4</a>`, "success");
-    showToast("Cliquez sur le bouton pour télécharger");
+    showStatus(`⚠️ La passerelle vidéo est temporairement occupée. Veuillez réessayez dans quelques secondes en cliquant sur <strong>Télécharger la vidéo</strong>.`, "error");
+    showToast("Veuillez réessayez dans un instant");
 }
 
 // Suivi de la progression via l'API
