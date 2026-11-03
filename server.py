@@ -54,8 +54,8 @@ QUALITY_FORMATS = {
     480:  "bestvideo[vcodec^=avc1][height<=480]+bestaudio[acodec^=mp4a]/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/best",
     720:  "bestvideo[vcodec^=avc1][height<=720]+bestaudio[acodec^=mp4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
     1080: "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
-    # Pour le 4K on accepte tous les codecs (AV1 inclus) car seul VLC et les lecteurs modernes peuvent lire le 4K AV1
-    2160: "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
+    # 4K : d'abord H.264 si dispo, sinon meilleure qualité (AV1/VP9 → utiliser VLC pour lire)
+    2160: "bestvideo[vcodec^=avc1][height<=2160]+bestaudio[acodec^=mp4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
 }
 
 
