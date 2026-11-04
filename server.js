@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -8,17 +7,18 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Servir le front-end statique (index.html, style.css, script.js)
+// Servir les fichiers statiques avec les bons headers COOP/COEP (obligatoires pour ffmpeg.wasm)
+app.use((req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    next();
+});
+
 app.use(express.static(__dirname));
 
-// ─────────────────────────────────────────────────────────────
-// Clé RapidAPI (définie dans Vercel → Settings → Env Variables)
-// ─────────────────────────────────────────────────────────────
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '';
 
-// ─────────────────────────────────────────────────────────────
-// Utilitaire : extraire l'ID YouTube depuis une URL
-// ─────────────────────────────────────────────────────────────
+// Extraire l'ID YouTube
 function extractVideoId(url) {
     const match = url.match(
         /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([\w-]{11})/
@@ -26,151 +26,142 @@ function extractVideoId(url) {
     return match ? match[1] : null;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Endpoint santé
-// ─────────────────────────────────────────────────────────────
+// ─── Santé ───────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', server: 'express', rapidapi: !!RAPIDAPI_KEY });
+    res.json({ status: 'ok', rapidapi: !!RAPIDAPI_KEY });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Endpoint principal : obtenir un lien de téléchargement direct
-// via RapidAPI (yt-api ou youtube-mp36)
-// Le navigateur télécharge DIRECTEMENT depuis le CDN → pas de
-// limite de taille Vercel, pas de timeout, son inclus.
-// ─────────────────────────────────────────────────────────────
+// ─── Download principal ───────────────────────────────────────
+// Pour 480p/720p  → retourne { type:'direct', downloadUrl, filename }
+// Pour 1080p/4K   → retourne { type:'merge', videoUrl, audioUrl, filename }
 app.get('/api/download', async (req, res) => {
     try {
         const videoUrl = req.query.url;
-        const quality  = req.query.quality || '720';
+        const quality  = parseInt(req.query.quality, 10) || 720;
 
-        if (!videoUrl) {
-            return res.status(400).json({ error: 'URL manquante' });
-        }
+        if (!videoUrl) return res.status(400).json({ error: 'URL manquante' });
 
         const videoId = extractVideoId(videoUrl);
-        if (!videoId) {
-            return res.status(400).json({ error: 'URL YouTube invalide' });
-        }
+        if (!videoId) return res.status(400).json({ error: 'URL YouTube invalide' });
 
         if (!RAPIDAPI_KEY) {
             return res.status(503).json({
-                error: 'Clé RapidAPI non configurée. Ajoutez RAPIDAPI_KEY dans Vercel → Settings → Environment Variables.'
+                error: 'Clé RapidAPI manquante. Configurez RAPIDAPI_KEY dans Vercel → Settings → Environment Variables.'
             });
         }
 
-        // ── Appel API 1 : yt-api (qualité configurable) ──────────────────
-        // Docs: https://rapidapi.com/ytjar/api/yt-api
-        let downloadUrl = null;
-        let filename    = `video_youtube_${videoId}.mp4`;
-
-        try {
-            const qualityParam = quality === '2160' ? '2160' :
-                                 quality === '1080' ? '1080' :
-                                 quality === '480'  ? '480'  : '720';
-
-            const apiRes = await fetch(
-                `https://yt-api.p.rapidapi.com/dl?id=${videoId}&cgeo=US`,
-                {
-                    method: 'GET',
-                    headers: {
-                        'x-rapidapi-key':  RAPIDAPI_KEY,
-                        'x-rapidapi-host': 'yt-api.p.rapidapi.com'
-                    }
-                }
-            );
-
-            if (apiRes.ok) {
-                const data = await apiRes.json();
-
-                // yt-api renvoie { title, formats: [{url, qualityLabel, ...}] }
-                if (data.title) {
-                    filename = data.title.replace(/[\\/:*?"<>|]/g, '').trim() + '.mp4';
-                }
-
-                // Trouver le format avec son le plus proche de la qualité demandée
-                if (data.formats && data.formats.length > 0) {
-                    // Préférer les formats avec audio+video (mimeType video/mp4)
-                    const avFormats = data.formats.filter(f =>
-                        f.mimeType && f.mimeType.startsWith('video/mp4') &&
-                        f.url && f.hasAudio !== false
-                    );
-
-                    // Chercher la qualité demandée en priorité
-                    const targetHeight = parseInt(qualityParam, 10);
-                    const best = avFormats.find(f => f.qualityLabel && f.qualityLabel.startsWith(qualityParam)) ||
-                                 avFormats.sort((a, b) => {
-                                     const ha = parseInt(a.qualityLabel || '0', 10);
-                                     const hb = parseInt(b.qualityLabel || '0', 10);
-                                     return Math.abs(ha - targetHeight) - Math.abs(hb - targetHeight);
-                                 })[0];
-
-                    if (best && best.url) {
-                        downloadUrl = best.url;
-                    }
-                }
-
-                // Fallback : lien direct si l'API renvoie un url racine
-                if (!downloadUrl && data.url) {
-                    downloadUrl = data.url;
+        // ── Appel yt-api ──────────────────────────────────────
+        const apiRes = await fetch(
+            `https://yt-api.p.rapidapi.com/dl?id=${videoId}&cgeo=US`,
+            {
+                headers: {
+                    'x-rapidapi-key':  RAPIDAPI_KEY,
+                    'x-rapidapi-host': 'yt-api.p.rapidapi.com'
                 }
             }
-        } catch (e) {
-            console.error('yt-api erreur:', e.message);
+        );
+
+        if (!apiRes.ok) {
+            return res.status(502).json({ error: `yt-api a répondu avec le code ${apiRes.status}` });
         }
 
-        // ── Appel API 2 (fallback) : youtube-mp36 (MP3 → on renvoie l'URL brute) ──
-        if (!downloadUrl) {
-            try {
-                const mp4Res = await fetch(
-                    `https://youtube-mp36.p.rapidapi.com/dl?id=${videoId}`,
-                    {
-                        method: 'GET',
-                        headers: {
-                            'x-rapidapi-key':  RAPIDAPI_KEY,
-                            'x-rapidapi-host': 'youtube-mp36.p.rapidapi.com'
-                        }
-                    }
+        const data = await apiRes.json();
+
+        // Nom de fichier propre
+        const rawTitle  = data.title || `video_youtube_${videoId}`;
+        const safeTitle = rawTitle.replace(/[\\/:*?"<>|]/g, '').trim();
+
+        // Tous les formats disponibles
+        const formats = data.formats || data.adaptiveFormats || [];
+
+        // ── Cas 480p / 720p → format muxé (vidéo + son dans un seul fichier) ──
+        if (quality <= 720) {
+            // itag 22 = 720p MP4 muxé | itag 18 = 360p MP4 muxé
+            const targetItag = quality === 480 ? '18' : '22';
+
+            // Chercher d'abord le bon itag
+            let best = formats.find(f => String(f.itag) === targetItag && f.url);
+
+            // Fallback : premier format muxé disponible
+            if (!best) {
+                best = formats.find(f =>
+                    f.url &&
+                    f.mimeType && f.mimeType.startsWith('video/') &&
+                    f.audioQuality  // indique que le son est inclus
                 );
-                if (mp4Res.ok) {
-                    const mp4Data = await mp4Res.json();
-                    if (mp4Data.link) {
-                        downloadUrl = mp4Data.link;
-                        if (mp4Data.title) {
-                            filename = mp4Data.title.replace(/[\\/:*?"<>|]/g, '').trim() + '.mp4';
-                        }
-                    }
-                }
-            } catch (e) {
-                console.error('youtube-mp36 erreur:', e.message);
             }
+
+            // Fallback final : lien direct de l'API
+            const downloadUrl = (best && best.url) || data.url;
+            if (!downloadUrl) {
+                return res.status(503).json({ error: 'Aucun lien de téléchargement disponible. Réessayez.' });
+            }
+
+            return res.json({ type: 'direct', downloadUrl, filename: `${safeTitle}.mp4` });
         }
 
-        if (!downloadUrl) {
-            return res.status(503).json({
-                error: 'Impossible d\'obtenir le lien de téléchargement. Réessayez dans quelques secondes.'
-            });
+        // ── Cas 1080p / 4K → formats adaptatifs séparés + merge côté client ──
+        const targetHeight = quality; // 1080 ou 2160
+
+        // Formats vidéo uniquement (sans audio), triés par qualité
+        const videoFormats = formats.filter(f =>
+            f.url &&
+            f.mimeType && f.mimeType.startsWith('video/') &&
+            (!f.audioQuality || f.audioQuality === 'AUDIO_QUALITY_NONE' || f.audioChannels === 0)
+        );
+
+        // Formats audio uniquement
+        const audioFormats = formats.filter(f =>
+            f.url &&
+            f.mimeType && (f.mimeType.startsWith('audio/') ||
+            (f.mimeType.startsWith('video/') && !f.qualityLabel))
+        );
+
+        // Choisir la meilleure vidéo au plus proche de la qualité demandée
+        let bestVideo = videoFormats
+            .filter(f => f.qualityLabel)
+            .sort((a, b) => {
+                const ha = parseInt(a.qualityLabel, 10) || 0;
+                const hb = parseInt(b.qualityLabel, 10) || 0;
+                return Math.abs(ha - targetHeight) - Math.abs(hb - targetHeight);
+            })[0];
+
+        // Choisir la meilleure piste audio (qualité max)
+        let bestAudio = audioFormats
+            .sort((a, b) => (parseInt(b.bitrate, 10) || 0) - (parseInt(a.bitrate, 10) || 0))[0];
+
+        // Si pas de format adaptatif → tenter le format muxé le plus proche
+        if (!bestVideo || !bestAudio) {
+            const muxed = formats.find(f => f.url && f.mimeType && f.mimeType.startsWith('video/') && f.audioQuality);
+            if (muxed) {
+                return res.json({ type: 'direct', downloadUrl: muxed.url, filename: `${safeTitle}.mp4` });
+            }
+            if (data.url) {
+                return res.json({ type: 'direct', downloadUrl: data.url, filename: `${safeTitle}.mp4` });
+            }
+            return res.status(503).json({ error: 'Formats 1080p/4K non disponibles pour cette vidéo. Essayez 720p.' });
         }
 
-        // ── Retourner l'URL CDN au navigateur ────────────────────────────
-        // Le navigateur télécharge DIRECTEMENT (pas via Vercel) → pas de timeout
-        res.json({ downloadUrl, filename });
+        return res.json({
+            type:      'merge',
+            videoUrl:  bestVideo.url,
+            audioUrl:  bestAudio.url,
+            videoLabel: bestVideo.qualityLabel || `${targetHeight}p`,
+            filename:  `${safeTitle}.mp4`
+        });
 
     } catch (err) {
-        console.error('Erreur route /api/download:', err);
+        console.error('Erreur /api/download:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// Démarrage local
-// ─────────────────────────────────────────────────────────────
+// ─── Démarrage local ──────────────────────────────────────────
 if (!process.env.VERCEL) {
     app.listen(PORT, () => {
         console.log('='.repeat(60));
-        console.log(`[OK] SERVEUR EXPRESS DEMARRE`);
-        console.log(`--> http://localhost:${PORT}`);
-        console.log(`--> RapidAPI Key: ${RAPIDAPI_KEY ? 'CONFIGUREE ✓' : 'MANQUANTE ✗'}`);
+        console.log(`[OK] SERVEUR DEMARRE → http://localhost:${PORT}`);
+        console.log(`RapidAPI Key: ${RAPIDAPI_KEY ? 'OK ✓' : 'MANQUANTE ✗'}`);
         console.log('='.repeat(60));
     });
 }

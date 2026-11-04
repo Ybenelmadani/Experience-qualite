@@ -1,48 +1,47 @@
 /**
- * YouTube MP4 Converter - Client Script
- * Détection automatique du lien, affichage instantané de la miniature (image),
- * et interaction avec le serveur de téléchargement Python.
+ * YouTube MP4 Converter – script.js (module)
+ * Supporte 480p/720p (direct) et 1080p/4K (merge FFmpeg.wasm côté navigateur)
  */
 
-// Éléments du DOM
-const videoUrlInput = document.getElementById('videoUrl');
-const urlForm = document.getElementById('urlForm');
-const pasteBtn = document.getElementById('pasteBtn');
-const clearBtn = document.getElementById('clearBtn');
-const downloadBtn = document.getElementById('downloadBtn');
+// ── Import FFmpeg.wasm depuis CDN ───────────────────────────────────────────
+import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/esm/index.js';
+import { fetchFile, toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js';
 
-const previewSection = document.getElementById('previewSection');
-const videoThumbnail = document.getElementById('videoThumbnail');
-const videoTitle = document.getElementById('videoTitle');
-const videoAuthor = document.getElementById('videoAuthor');
-const actionDownloadBtn = document.getElementById('actionDownloadBtn');
-const openYoutubeLink = document.getElementById('openYoutubeLink');
-const copyImageBtn = document.getElementById('copyImageBtn');
-const qualityBadge = document.getElementById('qualityBadge');
+// ── Éléments du DOM ─────────────────────────────────────────────────────────
+const videoUrlInput    = document.getElementById('videoUrl');
+const urlForm          = document.getElementById('urlForm');
+const pasteBtn         = document.getElementById('pasteBtn');
+const clearBtn         = document.getElementById('clearBtn');
+const downloadBtn      = document.getElementById('downloadBtn');
+const previewSection   = document.getElementById('previewSection');
+const videoThumbnail   = document.getElementById('videoThumbnail');
+const videoTitle       = document.getElementById('videoTitle');
+const videoAuthor      = document.getElementById('videoAuthor');
+const actionDownloadBtn= document.getElementById('actionDownloadBtn');
+const openYoutubeLink  = document.getElementById('openYoutubeLink');
+const copyImageBtn     = document.getElementById('copyImageBtn');
+const qualityBadge     = document.getElementById('qualityBadge');
+const progressContainer= document.getElementById('progressContainer');
+const progressBar      = document.getElementById('progressBar');
+const progressText     = document.getElementById('progressText');
+const progressPercent  = document.getElementById('progressPercent');
+const statusMessage    = document.getElementById('statusMessage');
+const toastEl          = document.getElementById('toast');
 
-const progressContainer = document.getElementById('progressContainer');
-const progressBar = document.getElementById('progressBar');
-const progressText = document.getElementById('progressText');
-const progressPercent = document.getElementById('progressPercent');
-const statusMessage = document.getElementById('statusMessage');
-const toastEl = document.getElementById('toast');
-
-let currentVideoId = null;
+let currentVideoId      = null;
 let currentThumbnailUrl = null;
-let downloadPollInterval = null;
-let selectedQuality = 720; // Qualité par défaut
+let selectedQuality     = 720;
+let ffmpegInstance      = null;
 
-// ==========================================
-// 0. Sélecteur de qualité
-// ==========================================
+// ── Sélecteur de qualité ─────────────────────────────────────────────────────
 const qualityPills = document.querySelectorAll('.quality-pill');
-const qualityNote = document.getElementById('qualityNote');
+const qualityNote  = document.getElementById('qualityNote');
 
 const qualityNotes = {
     480:  'Petite taille · Lecture rapide sur mobile',
-    720:  'Meilleure compatibilité Windows',
-    1080: 'Full HD · Recommandé pour PC',
-    2160: '4K Ultra HD · Gros fichier · Lecteur VLC conseillé'
+    720:  'Meilleure compatibilité · Son inclus',
+    1080: 'Full HD · Merge automatique dans votre navigateur',
+    2160: '4K Ultra HD · Merge automatique (peut prendre 1-2 min)'
 };
 
 const qualityBadgeLabels = {
@@ -57,130 +56,87 @@ qualityPills.forEach(pill => {
         qualityPills.forEach(p => p.classList.remove('active'));
         pill.classList.add('active');
         selectedQuality = parseInt(pill.dataset.quality, 10);
-        if (qualityNote) qualityNote.textContent = qualityNotes[selectedQuality] || '';
+        if (qualityNote)  qualityNote.textContent  = qualityNotes[selectedQuality] || '';
         if (qualityBadge) qualityBadge.textContent = qualityBadgeLabels[selectedQuality] || '';
     });
 });
 
-// ==========================================
-// 1. Extraction de l'ID YouTube
-// ==========================================
+// ── Extraction ID YouTube ────────────────────────────────────────────────────
 function extractYouTubeId(url) {
     if (!url) return null;
-    const cleanUrl = url.trim();
-
-    // Supporte : youtube.com/watch?v=..., youtu.be/..., shorts/..., embed/..., etc.
     const regExp = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([\w-]{11})/;
-    const match = cleanUrl.match(regExp);
+    const match = url.trim().match(regExp);
     return match ? match[1] : null;
 }
 
-// ==========================================
-// 2. Chargement de la vidéo en tant qu'image
-// ==========================================
+// ── Chargement aperçu vidéo ──────────────────────────────────────────────────
 function loadVideoPreview(videoId, rawUrl) {
-    if (!videoId) {
-        hidePreview();
-        return;
-    }
+    if (!videoId) { hidePreview(); return; }
 
     currentVideoId = videoId;
     const maxResUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
-    const hqResUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+    const hqResUrl  = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
 
-    // Chargement de l'image miniature avec fallback intelligent
     videoThumbnail.src = maxResUrl;
     currentThumbnailUrl = maxResUrl;
 
-    videoThumbnail.onload = function() {
-        // YouTube renvoie parfois un placeholder 120x90 si maxresdefault n'existe pas
+    videoThumbnail.onload = function () {
         if (videoThumbnail.naturalWidth === 120) {
             videoThumbnail.src = hqResUrl;
             currentThumbnailUrl = hqResUrl;
         }
     };
-
-    videoThumbnail.onerror = function() {
+    videoThumbnail.onerror = function () {
         videoThumbnail.src = hqResUrl;
         currentThumbnailUrl = hqResUrl;
     };
 
-    // Liens et états par défaut
     openYoutubeLink.href = `https://www.youtube.com/watch?v=${videoId}`;
-    videoTitle.textContent = "Chargement des informations...";
+    videoTitle.textContent  = "Chargement des informations...";
     videoAuthor.textContent = "YouTube Video";
-
-    // Afficher la section d'aperçu
     previewSection.classList.remove('hidden');
 
-    // Charger le widget de téléchargement direct avec son (pour mobile et Vercel)
-    const downloadFrame = document.getElementById('downloadFrame');
-    const directDownloadBox = document.getElementById('directDownloadBox');
-    if (downloadFrame && directDownloadBox) {
-        const fullUrl = rawUrl || `https://www.youtube.com/watch?v=${videoId}`;
-        downloadFrame.src = `https://api.vevioz.com/api/button/mp4?url=${encodeURIComponent(fullUrl)}`;
-        directDownloadBox.classList.remove('hidden');
-    }
-
-    // Récupérer le titre et l'auteur via l'API oEmbed de YouTube (sans clé d'API requise)
     fetchOEmbedData(videoId, rawUrl);
 }
 
 function hidePreview() {
     currentVideoId = null;
     previewSection.classList.add('hidden');
-    const downloadFrame = document.getElementById('downloadFrame');
-    const directDownloadBox = document.getElementById('directDownloadBox');
-    if (downloadFrame) downloadFrame.src = '';
-    if (directDownloadBox) directDownloadBox.classList.add('hidden');
     hideProgress();
     hideStatus();
 }
 
-// Récupération des métadonnées (titre, créateur) via YouTube oEmbed
 async function fetchOEmbedData(videoId, rawUrl) {
     const targetUrl = rawUrl || `https://www.youtube.com/watch?v=${videoId}`;
-    const oembedEndpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`;
-
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`;
     try {
-        const response = await fetch(oembedEndpoint);
-        if (response.ok) {
-            const data = await response.json();
-            videoTitle.textContent = data.title || "Vidéo YouTube";
+        const res = await fetch(oembedUrl);
+        if (res.ok) {
+            const data = await res.json();
+            videoTitle.textContent  = data.title        || "Vidéo YouTube";
             videoAuthor.textContent = data.author_name ? `Chaîne : ${data.author_name}` : "YouTube";
         } else {
             videoTitle.textContent = `Vidéo ID : ${videoId}`;
         }
-    } catch (err) {
-        // En cas d'échec réseau ou CORS (si ouvert localement en file://), on affiche l'ID
+    } catch {
         videoTitle.textContent = `Vidéo YouTube (${videoId})`;
     }
 }
 
-// ==========================================
-// 3. Gestionnaires d'événements Input
-// ==========================================
-
-// Détection en direct lors de la saisie ou collage
-videoUrlInput.addEventListener('input', (e) => {
+// ── Événements Input ─────────────────────────────────────────────────────────
+videoUrlInput.addEventListener('input', e => {
     const val = e.target.value.trim();
     if (val.length > 0) {
         clearBtn.classList.remove('hidden');
+        const id = extractYouTubeId(val);
+        if (id) loadVideoPreview(id, val);
+        else hidePreview();
     } else {
         clearBtn.classList.add('hidden');
-        hidePreview();
-        return;
-    }
-
-    const videoId = extractYouTubeId(val);
-    if (videoId) {
-        loadVideoPreview(videoId, val);
-    } else {
         hidePreview();
     }
 });
 
-// Bouton Effacer
 clearBtn.addEventListener('click', () => {
     videoUrlInput.value = '';
     clearBtn.classList.add('hidden');
@@ -188,44 +144,119 @@ clearBtn.addEventListener('click', () => {
     videoUrlInput.focus();
 });
 
-// Bouton Coller depuis le presse-papier
 pasteBtn.addEventListener('click', async () => {
     try {
         const text = await navigator.clipboard.readText();
         if (text) {
             videoUrlInput.value = text.trim();
             clearBtn.classList.remove('hidden');
-            const videoId = extractYouTubeId(text);
-            if (videoId) {
-                loadVideoPreview(videoId, text.trim());
-                showToast("Lien collé avec succès !");
-            } else {
-                showToast("Le lien collé n'est pas une URL YouTube valide.");
-            }
+            const id = extractYouTubeId(text);
+            if (id) { loadVideoPreview(id, text.trim()); showToast("Lien collé !"); }
+            else showToast("Ce lien n'est pas une URL YouTube valide.");
         }
-    } catch (err) {
+    } catch {
         videoUrlInput.focus();
-        showToast("Veuillez coller le lien avec Ctrl+V.");
+        showToast("Utilisez Ctrl+V pour coller.");
     }
 });
 
-// Copier le lien de la miniature
 copyImageBtn.addEventListener('click', async () => {
     if (!currentThumbnailUrl) return;
     try {
         await navigator.clipboard.writeText(currentThumbnailUrl);
-        showToast("Lien de l'image (miniature) copié !");
-    } catch (e) {
+        showToast("Lien miniature copié !");
+    } catch {
         showToast(currentThumbnailUrl);
     }
 });
 
-// ==========================================
-// 4. Téléchargement via backend Vercel (RapidAPI)
-// ==========================================
+// ── Chargement FFmpeg.wasm (lazy) ────────────────────────────────────────────
+async function loadFFmpeg() {
+    if (ffmpegInstance) return ffmpegInstance;
 
+    showProgress("⏳ Chargement FFmpeg WebAssembly (première fois ~30 sec)...", 10);
+
+    const ffmpeg = new FFmpeg();
+
+    // Afficher la progression de l'encodage
+    ffmpeg.on('progress', ({ progress }) => {
+        const pct = Math.round(progress * 100);
+        showProgress(`🔧 Fusion vidéo+audio en cours... ${pct}%`, 60 + Math.round(progress * 35));
+    });
+
+    // Charger le core depuis CDN jsDelivr (supporte crossOriginIsolated)
+    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+    await ffmpeg.load({
+        coreURL:   await toBlobURL(`${baseURL}/ffmpeg-core.js`,    'text/javascript'),
+        wasmURL:   await toBlobURL(`${baseURL}/ffmpeg-core.wasm`,  'application/wasm'),
+        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
+    });
+
+    ffmpegInstance = ffmpeg;
+    return ffmpeg;
+}
+
+// ── Fusion vidéo + audio (1080p / 4K) ───────────────────────────────────────
+async function mergeVideoAudio(videoUrl, audioUrl, filename) {
+    try {
+        const ffmpeg = await loadFFmpeg();
+        showProgress("📥 Téléchargement du flux vidéo HD...", 25);
+
+        const videoData = await fetchFile(videoUrl);
+        showProgress("📥 Téléchargement du flux audio...", 45);
+
+        const audioData = await fetchFile(audioUrl);
+        showProgress("🔧 Fusion vidéo + audio (FFmpeg)...", 60);
+
+        // Écrire les fichiers dans le système de fichiers virtuel de FFmpeg
+        ffmpeg.writeFile('video_in.mp4',  videoData);
+        ffmpeg.writeFile('audio_in.webm', audioData);
+
+        // Merger : copie sans ré-encodage (très rapide)
+        await ffmpeg.exec([
+            '-i', 'video_in.mp4',
+            '-i', 'audio_in.webm',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-shortest',
+            'output.mp4'
+        ]);
+
+        showProgress("💾 Préparation du fichier final...", 98);
+
+        const data = await ffmpeg.readFile('output.mp4');
+        const blob = new Blob([data.buffer], { type: 'video/mp4' });
+        const blobUrl = URL.createObjectURL(blob);
+
+        // Téléchargement automatique
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // Nettoyage mémoire
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+        // Nettoyer les fichiers virtuels
+        try {
+            ffmpeg.deleteFile('video_in.mp4');
+            ffmpeg.deleteFile('audio_in.webm');
+            ffmpeg.deleteFile('output.mp4');
+        } catch {}
+
+        return true;
+
+    } catch (err) {
+        console.error('Erreur FFmpeg merge:', err);
+        throw err;
+    }
+}
+
+// ── Fonction principale de téléchargement ───────────────────────────────────
 async function triggerDownload() {
-    const url = videoUrlInput.value.trim();
+    const url     = videoUrlInput.value.trim();
     const videoId = extractYouTubeId(url);
 
     if (!videoId) {
@@ -234,182 +265,118 @@ async function triggerDownload() {
         return;
     }
 
-    // Afficher l'état de chargement
     downloadBtn.classList.add('loading');
     actionDownloadBtn.disabled = true;
-    showProgress(`⏳ Préparation du fichier MP4 (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 20);
+    showProgress(`⏳ Préparation MP4 (${selectedQuality === 2160 ? '4K' : selectedQuality + 'p'})...`, 10);
     hideStatus();
 
     try {
-        // ─── Étape 1 : Demander l'URL CDN au backend ───────────────────
-        showProgress("🔍 Récupération du lien de téléchargement...", 40);
-
+        // ─── Étape 1 : Demander les URLs au backend ─────────────────────
+        showProgress("🔍 Récupération des liens de téléchargement...", 20);
         const apiEndpoint = `/api/download?url=${encodeURIComponent(url)}&quality=${selectedQuality}`;
         const response = await fetch(apiEndpoint);
-        const data = await response.json();
+        const data     = await response.json();
 
-        if (!response.ok || !data.downloadUrl) {
-            const errMsg = data.error || "Impossible d'obtenir le lien vidéo.";
-            downloadBtn.classList.remove('loading');
-            actionDownloadBtn.disabled = false;
-            hideProgress();
-            showStatus(`❌ <strong>Erreur :</strong> ${errMsg}<br><small>Réessayez dans quelques secondes.</small>`, "error");
-            showToast("Erreur : " + errMsg);
-            return;
+        if (!response.ok) {
+            throw new Error(data.error || "Erreur serveur");
         }
 
-        // ─── Étape 2 : Déclencher le téléchargement direct depuis le CDN ──
-        showProgress("⬇️ Téléchargement en cours depuis le serveur...", 70);
-
         const filename = data.filename || `video_youtube_${videoId}.mp4`;
-        const a = document.createElement('a');
-        a.href = data.downloadUrl;
-        a.setAttribute('download', filename);
-        a.setAttribute('target', '_blank');  // fallback mobile
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
 
-        // ─── Étape 3 : Confirmer à l'utilisateur ────────────────────────
-        setTimeout(() => {
-            showProgress("✅ Téléchargement lancé !", 100);
+        // ─── Cas 1 : Format direct (480p / 720p) ───────────────────────
+        if (data.type === 'direct') {
+            showProgress("⬇️ Téléchargement direct en cours...", 70);
+
+            const a = document.createElement('a');
+            a.href = data.downloadUrl;
+            a.setAttribute('download', filename);
+            a.setAttribute('target', '_blank');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            setTimeout(() => {
+                showProgress("✅ Téléchargement lancé !", 100);
+                downloadBtn.classList.remove('loading');
+                actionDownloadBtn.disabled = false;
+                showStatus(
+                    `✅ <strong>Téléchargement lancé !</strong><br>` +
+                    `Fichier : <strong>${filename}</strong><br>` +
+                    `Le fichier MP4 avec son s'enregistre dans votre dossier <strong>Téléchargements</strong>.<br>` +
+                    `<a href="${data.downloadUrl}" download="${filename}" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Retélécharger</a>`,
+                    'success'
+                );
+                showToast("✅ Téléchargement MP4 lancé !");
+            }, 800);
+
+        // ─── Cas 2 : Merge nécessaire (1080p / 4K) ─────────────────────
+        } else if (data.type === 'merge') {
+            showProgress(`🔧 FFmpeg : Merge ${data.videoLabel || selectedQuality + 'p'} + Audio...`, 25);
+            showToast(`🔧 Fusion en cours (${data.videoLabel || selectedQuality + 'p'})...`);
+
+            await mergeVideoAudio(data.videoUrl, data.audioUrl, filename);
+
+            showProgress("✅ Merge terminé – Fichier téléchargé !", 100);
             downloadBtn.classList.remove('loading');
             actionDownloadBtn.disabled = false;
             showStatus(
-                `✅ <strong>Téléchargement lancé avec succès !</strong><br>` +
-                `Le fichier <strong>${filename}</strong> (MP4 avec son) est en cours d'enregistrement dans votre dossier <strong>Téléchargements</strong>.<br>` +
-                `<a href="${data.downloadUrl}" download="${filename}" class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">📥 Retélécharger si nécessaire</a>`,
-                "success"
+                `✅ <strong>Vidéo ${data.videoLabel || selectedQuality + 'p'} avec son téléchargée !</strong><br>` +
+                `Fichier : <strong>${filename}</strong><br>` +
+                `Vérifiez votre dossier <strong>Téléchargements</strong>.`,
+                'success'
             );
-            showToast("✅ Téléchargement MP4 lancé !");
-        }, 800);
+            showToast(`✅ ${data.videoLabel || selectedQuality + 'p'} MP4 avec son téléchargé !`);
+
+        } else {
+            throw new Error("Réponse inattendue du serveur");
+        }
 
     } catch (err) {
         downloadBtn.classList.remove('loading');
         actionDownloadBtn.disabled = false;
         hideProgress();
-        showStatus(`❌ <strong>Erreur réseau :</strong> ${err.message}<br><small>Vérifiez votre connexion et réessayez.</small>`, "error");
-        showToast("Erreur réseau : " + err.message);
+        const userMsg = err.message.includes('SharedArrayBuffer')
+            ? '⚠️ Votre navigateur ne supporte pas le merge local. Essayez Chrome ou Firefox, ou choisissez 720p.'
+            : err.message;
+        showStatus(`❌ <strong>Erreur :</strong> ${userMsg}`, 'error');
+        showToast("Erreur : " + err.message.substring(0, 60));
     }
 }
 
-// Suivi de la progression via l'API
-function pollDownloadProgress(taskId, origin = '') {
-    if (downloadPollInterval) clearInterval(downloadPollInterval);
-
-    downloadPollInterval = setInterval(async () => {
-        try {
-            const endpoint = origin ? `${origin}/api/progress?id=${encodeURIComponent(taskId)}` : `/api/progress?id=${encodeURIComponent(taskId)}`;
-            const res = await fetch(endpoint);
-            if (!res.ok) return;
-
-            const info = await res.json();
-
-            if (info.status === 'downloading') {
-                const percent = Math.round(info.percent || 0);
-                const speed = info.speed || '';
-                const eta = info.eta ? `(ETA: ${info.eta}s)` : '';
-                showProgress(`Téléchargement... ${speed} ${eta}`, percent);
-            } else if (info.status === 'finished') {
-                clearInterval(downloadPollInterval);
-                downloadBtn.classList.remove('loading');
-                actionDownloadBtn.disabled = false;
-                showProgress("Téléchargement terminé !", 100);
-
-                const downloadUrl = origin ? `${origin}/videos/${encodeURIComponent(info.filename)}` : `/videos/${encodeURIComponent(info.filename)}`;
-                showStatus(`✅ <strong>Téléchargement réussi !</strong><br>Fichier : <code>${info.filename}</code><br><a href="${downloadUrl}" download class="btn-action btn-action-primary" style="margin-top:10px; display:inline-block;">Enregistrer sur votre PC</a>`, "success");
-                showToast("Téléchargement MP4 terminé !");
-                refreshDownloadsList();
-            } else if (info.status === 'error') {
-                clearInterval(downloadPollInterval);
-                downloadBtn.classList.remove('loading');
-                actionDownloadBtn.disabled = false;
-                hideProgress();
-                showStatus(`❌ Erreur de téléchargement : ${info.error || "Impossible de télécharger la vidéo"}`, "error");
-            }
-        } catch (e) {
-            clearInterval(downloadPollInterval);
-            downloadBtn.classList.remove('loading');
-            actionDownloadBtn.disabled = false;
-        }
-    }, 1000);
-}
-
-// Rafraîchir l'historique des vidéos téléchargées
-async function refreshDownloadsList() {
-    try {
-        const origin = await getApiOrigin();
-        const endpoint = origin ? `${origin}/api/videos` : '/api/videos';
-        const res = await fetch(endpoint);
-        if (res.ok) {
-            const data = await res.json();
-            const listEl = document.getElementById('downloadedFilesList');
-            const historySec = document.getElementById('downloadsHistory');
-            
-            if (data.videos && data.videos.length > 0) {
-                historySec.classList.remove('hidden');
-                listEl.innerHTML = data.videos.map(v => {
-                    const fileUrl = origin ? `${origin}/videos/${encodeURIComponent(v.name)}` : `/videos/${encodeURIComponent(v.name)}`;
-                    return `
-                    <li>
-                        <span>🎬 ${v.name} (${v.size})</span>
-                        <a href="${fileUrl}" download class="btn-action btn-action-secondary" style="padding: 4px 10px; font-size: 0.78rem;">Télécharger</a>
-                    </li>
-                `;
-                }).join('');
-            }
-        }
-    } catch (e) {
-        // En mode statique
-    }
-}
-
-// Gestion des formulaires et clics boutons
-urlForm.addEventListener('submit', triggerDownload);
+// ── Gestionnaires de formulaire ──────────────────────────────────────────────
+urlForm.addEventListener('submit', e => { e.preventDefault(); triggerDownload(); });
 downloadBtn.addEventListener('click', triggerDownload);
 actionDownloadBtn.addEventListener('click', triggerDownload);
 
-// ==========================================
-// 5. Fonctions d'interface utilitaires
-// ==========================================
+// ── Utilitaires UI ───────────────────────────────────────────────────────────
 function showProgress(text, percent) {
     progressContainer.classList.remove('hidden');
     progressBar.style.width = `${percent}%`;
     progressText.textContent = text;
     progressPercent.textContent = `${percent}%`;
 }
-
 function hideProgress() {
     progressContainer.classList.add('hidden');
     progressBar.style.width = '0%';
 }
-
 function showStatus(html, type = 'success') {
     statusMessage.innerHTML = html;
     statusMessage.className = `status-message ${type}`;
     statusMessage.classList.remove('hidden');
 }
-
 function hideStatus() {
     statusMessage.classList.add('hidden');
 }
-
 function showToast(message) {
     toastEl.textContent = message;
     toastEl.classList.remove('hidden');
-    setTimeout(() => {
-        toastEl.classList.add('hidden');
-    }, 3500);
+    setTimeout(() => toastEl.classList.add('hidden'), 4000);
 }
 
-// Initialisation au chargement de la page
+// ── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-    refreshDownloadsList();
-
-    // Si l'input contient déjà un lien (ex: auto-complété)
     if (videoUrlInput.value.trim()) {
         const id = extractYouTubeId(videoUrlInput.value);
         if (id) loadVideoPreview(id, videoUrlInput.value);
     }
 });
-
