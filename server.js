@@ -82,13 +82,30 @@ app.get('/api/download', async (req, res) => {
                   || muxedFormats[muxedFormats.length - 1]
                   || f720;
 
-        // Formats vidéo HD séparés. Ils n'ont pas de son intégré.
-        const videoOnly = adaptiveFormats.filter(f =>
-            f.url && f.mimeType && f.mimeType.startsWith('video/')
+        // Les flux adaptatifs sont vidéo seule. Quelques réponses de l'API les
+        // placent dans `formats` : on accepte uniquement ceux explicitement
+        // marqués sans audio afin de ne jamais confondre un flux basse qualité.
+        const isVideoFormat = f => f.url && f.mimeType && f.mimeType.startsWith('video/');
+        const isVideoOnly = f => isVideoFormat(f) && (
+            f.hasAudio === false ||
+            f.audioQuality === 'AUDIO_QUALITY_NONE' ||
+            Number(f.audioChannels) === 0
         );
+        const videoOnly = [
+            ...adaptiveFormats.filter(isVideoFormat),
+            ...formats.filter(isVideoOnly)
+        ];
 
-        const f1080 = videoOnly.find(f => f.qualityLabel && f.qualityLabel.includes('1080'));
-        const f4k   = videoOnly.find(f => f.qualityLabel && (f.qualityLabel.includes('2160') || /\b4k\b/i.test(f.qualityLabel)));
+        // Préférer MP4 lorsque la même résolution est disponible en MP4 et WebM.
+        const preferMp4 = candidates => candidates.sort((a, b) => {
+            const aMp4 = /video\/mp4/i.test(a.mimeType || '') ? 1 : 0;
+            const bMp4 = /video\/mp4/i.test(b.mimeType || '') ? 1 : 0;
+            return bMp4 - aMp4;
+        })[0];
+        const is1080 = f => Number(f.height) === 1080 || /\b1080p?\b/i.test(f.qualityLabel || '');
+        const is4k = f => Number(f.height) === 2160 || /\b(2160p?|4k)\b/i.test(f.qualityLabel || '');
+        const f1080 = preferMp4(videoOnly.filter(is1080));
+        const f4k = preferMp4(videoOnly.filter(is4k));
 
         // Sélection selon la qualité demandée
         let chosenUrl = null;
@@ -98,7 +115,6 @@ app.get('/api/download', async (req, res) => {
             chosenUrl = f480.url;
             qualityLabel = f480.qualityLabel || '480p';
         } else if (quality === 2160) {
-            // Si 4K demandé : si f4k existe avec audio séparé
             if (f4k && f4k.url) {
                 qualityLabel = f4k.qualityLabel || '4K 2160p';
                 return res.json({
@@ -111,8 +127,9 @@ app.get('/api/download', async (req, res) => {
                     withAudioFilename: `${safeTitle}_720p_avec_son.mp4`
                 });
             }
-            chosenUrl = (f720 && f720.url) || data.url;
-            qualityLabel = 'HD (Max disponible)';
+            return res.status(422).json({
+                error: 'Cette vidéo ne propose pas de flux 4K (2160p). Aucun fichier de qualité inférieure ne sera téléchargé.'
+            });
         } else if (quality === 1080) {
             if (f1080 && f1080.url) {
                 qualityLabel = f1080.qualityLabel || '1080p Full HD';
@@ -126,8 +143,9 @@ app.get('/api/download', async (req, res) => {
                     withAudioFilename: `${safeTitle}_720p_avec_son.mp4`
                 });
             }
-            chosenUrl = (f720 && f720.url) || data.url;
-            qualityLabel = 'HD 720p (Max avec son)';
+            return res.status(422).json({
+                error: 'Cette vidéo ne propose pas de flux Full HD (1080p). Aucun fichier de qualité inférieure ne sera téléchargé.'
+            });
         } else {
             // 720p par défaut (qualité maximale avec son intégré garanti)
             chosenUrl = (f720 && f720.url) || data.url;
