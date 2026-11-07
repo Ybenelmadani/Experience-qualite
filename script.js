@@ -8,7 +8,6 @@ const videoUrlInput    = document.getElementById('videoUrl');
 const urlForm          = document.getElementById('urlForm');
 const pasteBtn         = document.getElementById('pasteBtn');
 const clearBtn         = document.getElementById('clearBtn');
-const downloadBtn      = document.getElementById('downloadBtn');
 
 const previewSection   = document.getElementById('previewSection');
 const videoThumbnail   = document.getElementById('videoThumbnail');
@@ -28,6 +27,7 @@ const toastEl          = document.getElementById('toast');
 
 let currentVideoId      = null;
 let currentThumbnailUrl = null;
+let isDownloadRequest   = false;
 let selectedQuality     = 720; // 720p HD par défaut
 
 // ==========================================
@@ -52,11 +52,19 @@ const qualityBadgeLabels = {
 
 qualityPills.forEach(pill => {
     pill.addEventListener('click', () => {
+        if (isDownloadRequest) return;
         qualityPills.forEach(p => p.classList.remove('active'));
         pill.classList.add('active');
         selectedQuality = parseInt(pill.dataset.quality, 10);
         if (qualityNote)  qualityNote.textContent  = qualityNotes[selectedQuality] || '';
         if (qualityBadge) qualityBadge.textContent = qualityBadgeLabels[selectedQuality] || '';
+
+        if (extractYouTubeId(videoUrlInput.value.trim())) {
+            triggerDownload();
+        } else {
+            showToast('Collez d’abord une URL YouTube, puis choisissez une qualité.');
+            videoUrlInput.focus();
+        }
     });
 });
 
@@ -211,6 +219,32 @@ async function triggerDownload() {
         return;
     }
 
+    isDownloadRequest = true;
+    qualityPills.forEach(pill => { pill.disabled = true; });
+    hideProgress();
+    hideStatus();
+
+    try {
+        const endpoint = `/api/download?url=${encodeURIComponent(url)}&quality=${selectedQuality}`;
+        const res = await fetch(endpoint);
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.error || 'Erreur lors de la préparation du téléchargement');
+        }
+
+        startDownloadFromUrl(data.downloadUrl, data.filename || `youtube_${videoId}.mp4`);
+        showToast(`Téléchargement ${data.qualityLabel || selectedQuality + 'p'} lancé.`);
+    } catch (err) {
+        showStatus(`❌ <strong>Erreur :</strong> ${err.message}`, 'error');
+        showToast('Erreur : ' + err.message);
+    } finally {
+        isDownloadRequest = false;
+        qualityPills.forEach(pill => { pill.disabled = false; });
+    }
+
+    return;
+
     downloadBtn.classList.add('loading');
     actionDownloadBtn.disabled = true;
     showProgress("🔍 Génération du lien MP4 sécurisé...", 35);
@@ -293,7 +327,6 @@ urlForm.addEventListener('submit', (e) => {
     e.preventDefault();
     triggerDownload();
 });
-downloadBtn.addEventListener('click', triggerDownload);
 actionDownloadBtn.addEventListener('click', triggerDownload);
 
 // ==========================================

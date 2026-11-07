@@ -74,13 +74,11 @@ app.get('/api/download', async (req, res) => {
         const muxedFormats = formats.filter(f => f.url && (f.hasAudio !== false || f.audioQuality));
 
         // Format 720p avec son
-        const f720 = muxedFormats.find(f => String(f.itag) === '22' || (f.qualityLabel && f.qualityLabel.includes('720')))
-                  || muxedFormats[0];
+        const f720 = muxedFormats.find(f => String(f.itag) === '22' || (f.qualityLabel && f.qualityLabel.includes('720')));
 
         // Format 480p/360p avec son
         const f480 = muxedFormats.find(f => String(f.itag) === '18' || (f.qualityLabel && (f.qualityLabel.includes('480') || f.qualityLabel.includes('360'))))
-                  || muxedFormats[muxedFormats.length - 1]
-                  || f720;
+                  || muxedFormats[muxedFormats.length - 1];
 
         // Les flux adaptatifs sont vidéo seule. Quelques réponses de l'API les
         // placent dans `formats` : on accepte uniquement ceux explicitement
@@ -147,9 +145,13 @@ app.get('/api/download', async (req, res) => {
                 error: 'Cette vidéo ne propose pas de flux Full HD (1080p). Aucun fichier de qualité inférieure ne sera téléchargé.'
             });
         } else {
-            // 720p par défaut (qualité maximale avec son intégré garanti)
-            chosenUrl = (f720 && f720.url) || data.url;
-            qualityLabel = (f720 && f720.qualityLabel) || '720p HD';
+            if (!f720 || !f720.url) {
+                return res.status(422).json({
+                    error: 'Cette vidéo ne propose pas de flux 720p avec son. Aucun fichier de qualité inférieure ne sera téléchargé.'
+                });
+            }
+            chosenUrl = f720.url;
+            qualityLabel = f720.qualityLabel || '720p HD';
         }
 
         // Si aucun format trouvé, utiliser url racine
